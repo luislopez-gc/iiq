@@ -1,3 +1,4 @@
+# script.ps1
 # Tomcat 9 Installation Script for Windows Server 2025
 # This script installs Microsoft OpenJDK, Apache Tomcat 9, and Microsoft JDBC Driver
 
@@ -332,6 +333,124 @@ try {
     Write-Host "You may need to manually open port 8080 in Windows Firewall" -ForegroundColor Yellow
 }
 
+
+# ========== Installing Apache Ant (Latest) ==========
+Write-Host "`n========== Installing Apache Ant ==========" -ForegroundColor Magenta
+
+# Local (new) variables - do NOT conflict with the original script's variables
+$antDownloadDir   = "C:\Temp\AntInstall"
+$antInstallDir    = "C:\Program Files\Apache Software Foundation\Ant"
+$antBinaryBaseUrl = "https://ant.apache.org/bindownload.cgi"
+$antZipName       = $null
+$antZipUrl        = $null
+$antVersion       = $null
+
+# Create temp download directory
+if (-not (Test-Path $antDownloadDir)) {
+    New-Item -ItemType Directory -Path $antDownloadDir -Force | Out-Null
+    Write-Host "Created download directory: $antDownloadDir" -ForegroundColor Green
+}
+
+Write-Host "Fetching Apache Ant latest version info..." -ForegroundColor Cyan
+try {
+    # Get the Ant binary downloads page
+    $antPage = Invoke-WebRequest -Uri $antBinaryBaseUrl -UseBasicParsing
+
+    # Find the Windows ZIP link (pattern looks for apache-ant-<version>-bin.zip)
+    $zipPattern = 'href="(?<url>https?://[^"]*/apache-ant-(?<ver>\d+\.\d+\.\d+)-bin\.zip)"'
+    $zipMatch   = [regex]::Matches($antPage.Content, $zipPattern) | Select-Object -First 1
+
+    if ($zipMatch) {
+        $antZipUrl  = $zipMatch.Groups["url"].Value
+        $antVersion = $zipMatch.Groups["ver"].Value
+        $antZipName = "apache-ant-$antVersion-bin.zip"
+        Write-Host "Latest Ant version detected: $antVersion" -ForegroundColor Green
+        Write-Host "Download URL: $antZipUrl" -ForegroundColor Cyan
+    } else {
+        throw "Could not locate the latest Ant ZIP link on $antBinaryBaseUrl"
+    }
+}
+catch {
+    Write-Host "Error determining latest Ant version: $_" -ForegroundColor Red
+    Write-Host "Falling back to known stable version 1.10.14 from Apache archive..." -ForegroundColor Yellow
+    # Fallback (kept self-contained; adjust if needed)
+    $antVersion = "1.10.15"
+    $antZipName = "apache-ant-$antVersion-bin.zip"
+    $antZipUrl  = "https://archive.apache.org/dist/ant/binaries/$antZipName"
+}
+
+# Download Ant ZIP
+$antZipPath = Join-Path $antDownloadDir $antZipName
+Write-Host "Downloading Apache Ant $antVersion..." -ForegroundColor Cyan
+try {
+    Invoke-WebRequest -Uri $antZipUrl -OutFile $antZipPath -UseBasicParsing
+    Write-Host "Download completed: $antZipPath" -ForegroundColor Green
+}
+catch {
+    Write-Host "Error downloading Apache Ant: $_" -ForegroundColor Red
+    exit 1
+}
+
+# Extract ZIP to a temporary location
+Write-Host "Extracting Apache Ant..." -ForegroundColor Cyan
+$antExtractPath = Join-Path $antDownloadDir "extracted"
+Expand-Archive -Path $antZipPath -DestinationPath $antExtractPath -Force
+
+# Identify extracted folder (apache-ant-<version>)
+$antExtractedFolder = Get-ChildItem -Path $antExtractPath -Directory | Where-Object { $_.Name -like "apache-ant-*" } | Select-Object -First 1
+if (-not $antExtractedFolder) {
+    Write-Host "Could not find extracted Ant folder" -ForegroundColor Red
+    exit 1
+}
+
+# Prepare install directory
+$antInstallParent = Split-Path $antInstallDir -Parent
+if (-not (Test-Path $antInstallParent)) {
+    New-Item -ItemType Directory -Path $antInstallParent -Force | Out-Null
+}
+
+# Remove existing Ant installation (if any) and install the new one
+Write-Host "Installing Ant to: $antInstallDir" -ForegroundColor Cyan
+if (Test-Path $antInstallDir) {
+    Write-Host "Removing existing Ant installation..." -ForegroundColor Yellow
+    Remove-Item -Path $antInstallDir -Recurse -Force
+}
+Move-Item -Path $antExtractedFolder.FullName -Destination $antInstallDir -Force
+
+# Set ANT_HOME (Machine) and update system PATH
+Write-Host "Configuring ANT_HOME and PATH..." -ForegroundColor Cyan
+[System.Environment]::SetEnvironmentVariable("ANT_HOME", $antInstallDir, [System.EnvironmentVariableTarget]::Machine)
+
+# Ensure %ANT_HOME%\bin in system PATH (idempotent)
+$machinePath = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
+$antBinPath  = "$antInstallDir\bin"
+if ($machinePath -notmatch [regex]::Escape($antBinPath)) {
+    $newMachinePath = $antBinPath + ";" + $machinePath
+    [System.Environment]::SetEnvironmentVariable("Path", $newMachinePath, [System.EnvironmentVariableTarget]::Machine)
+    Write-Host "Added to PATH: $antBinPath" -ForegroundColor Green
+} else {
+    Write-Host "PATH already contains: $antBinPath" -ForegroundColor Yellow
+}
+
+# Refresh current session variables (best effort; a new session may still be required)
+$env:ANT_HOME = [System.Environment]::GetEnvironmentVariable("ANT_HOME", [System.EnvironmentVariableTarget]::Machine)
+$env:Path     = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
+
+# Verify Ant installation
+Write-Host "Verifying Ant installation..." -ForegroundColor Cyan
+try {
+    $antVersionOutput = & "$antInstallDir\bin\ant.bat" -version 2>&1
+    Write-Host "`nApache Ant installation verified:" -ForegroundColor Green
+    Write-Host " $antVersionOutput" -ForegroundColor White
+} catch {
+    Write-Host "Warning: Ant verification failed (session may need restart). Error: $_" -ForegroundColor Yellow
+}
+
+# Optional: clean up Ant temp files (keeps your original cleanup intact)
+Write-Host "`nCleaning up Ant temporary files..." -ForegroundColor Cyan
+Remove-Item -Path $antDownloadDir -Recurse -Force
+Write-Host "Ant cleanup completed" -ForegroundColor Green
+
 Write-Host "`n========== Installation Summary ==========" -ForegroundColor Magenta
 Write-Host "Java:" -ForegroundColor Cyan
 try {
@@ -356,5 +475,9 @@ Write-Host "`nMicrosoft JDBC Driver:" -ForegroundColor Cyan
 Write-Host "  Driver: $jdbcDriverVersion" -ForegroundColor White
 Write-Host "  Location: $tomcatLibDir" -ForegroundColor White
 Write-Host "  Status: Loaded with Tomcat" -ForegroundColor White
+
+Write-Host " Ant Version: $antVersion" -ForegroundColor White
+Write-Host " ANT_HOME: $env:ANT_HOME" -ForegroundColor White
+Write-Host " PATH contains ANT bin: " -ForegroundColor White
 
 Write-Host "`n========== Installation Complete! ==========" -ForegroundColor Green

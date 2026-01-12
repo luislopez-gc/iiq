@@ -5,6 +5,14 @@
 # Requires Administrator privileges
 #Requires -RunAsAdministrator
 
+param(
+    [Parameter(Mandatory = $true)]
+    [string] $tomcat_admin_username,
+
+    [Parameter(Mandatory = $true)]
+    [string] $tomcat_admin_password
+)
+
 # Configuration
 $downloadDir = "C:\Temp\TomcatInstall"
 $installDir = "C:\Program Files\Apache Software Foundation\Tomcat 9.0"
@@ -208,6 +216,53 @@ if (-not $memoryConfigSucceeded) {
     Set-Content -Path $setenvPath -Value $setenvContent -Encoding ASCII
     Write-Host "Fallback JAVA_OPTS written to: $setenvPath" -ForegroundColor Green
 }
+
+# >>> Create tomcat-users.xml with admin/manager access <<<
+# Helper to escape XML special characters
+function Escape-Xml([string]$s) {
+    if ($null -eq $s) { return "" }
+    return ($s -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "'","&apos;")
+}
+
+$escapedUser = Escape-Xml $tomcat_admin_username
+$escapedPass = Escape-Xml $tomcat_admin_password
+
+$tomcatUsersPath = Join-Path $installDir "conf\tomcat-users.xml"
+Write-Host "Creating Tomcat users configuration at: $tomcatUsersPath" -ForegroundColor Cyan
+
+$tomcatUsersXml = @"
+<?xml version="1.0" encoding="UTF-8"?>
+<tomcat-users xmlns="http://tomcat.apache.org/xml"
+              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+              xsi:schemaLocation="http://tomcat.apache.org/xml tomcat-users.xsd"
+              version="1.0">
+  <!-- Roles for Manager and Host Manager applications -->
+  <role rolename="manager-gui"/>
+  <role rolename="admin-gui"/>
+  <!-- Admin user -->
+  <user username="$escapedUser" password="$escapedPass" roles="manager-gui,admin-gui"/>
+</tomcat-users>
+"@
+
+# Ensure conf directory exists (should already)
+$confDir = Join-Path $installDir "conf"
+if (-not (Test-Path $confDir)) {
+    New-Item -Path $confDir -ItemType Directory -Force | Out-Null
+}
+Set-Content -Path $tomcatUsersPath -Value $tomcatUsersXml -Encoding UTF8
+
+# Optionally, tighten file permissions to Administrators only (uncomment if desired)
+# try {
+#     $acl = Get-Acl $tomcatUsersPath
+#     $admins = New-Object System.Security.Principal.NTAccount("Administrators")
+#     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($admins, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+#     $acl.SetAccessRuleProtection($true, $false) # disable inheritance
+#     $acl.SetAccessRule($rule)
+#     Set-Acl -Path $tomcatUsersPath -AclObject $acl
+#     Write-Host "Secured tomcat-users.xml ACL to Administrators." -ForegroundColor Green
+# } catch {
+#     Write-Host "Warning: Could not adjust ACL: $_" -ForegroundColor Yellow
+# }
 
 Pop-Location
 

@@ -148,6 +148,17 @@ if (Test-Path $installDir) {
 }
 Move-Item -Path $extractedFolder.FullName -Destination $installDir -Force
 
+# Unblock executables (MOTW)
+Write-Info "Unblocking binaries..."
+Get-ChildItem (Join-Path $installDir "bin\*.exe") -ErrorAction SilentlyContinue | ForEach-Object { Unblock-File $_.FullName }
+
+# Validate presence of x64 service wrapper (CLI)
+$tomcatSvcCli = Join-Path $installDir "bin\tomcat9.exe"
+if (-not (Test-Path $tomcatSvcCli)) {
+    Write-Err "tomcat9.exe not found under $($installDir)\bin. Ensure the Windows x64 ZIP was used."
+    exit 1
+}
+
 # Set CATALINA_HOME environment variable
 Write-Host "Setting CATALINA_HOME environment variable..." -ForegroundColor Cyan
 [System.Environment]::SetEnvironmentVariable("CATALINA_HOME", $installDir, [System.EnvironmentVariableTarget]::Machine)
@@ -185,23 +196,17 @@ try {
     exit 1
 }
 
-# >>> Configure JVM heap for the Windows service <<<
-# Use prunsrv to update the service with min=512MB and max=2048MB
-# --JvmMs and --JvmMx are specified in megabytes
-$prunsrv = Join-Path $installDir "bin\prunsrv.exe"
-
-Write-Host "Configuring JVM heap (min=512MB, max=2048MB) for service '$serviceName'..." -ForegroundColor Cyan
+# -----------------------------
+# Configure JVM heap for service (512 MB .. 2048 MB) via CLI (Procrun)
+# -----------------------------
+Write-Info "Configuring JVM heap (min=512MB, max=2048MB) for service '$serviceName'..."
 $memoryConfigSucceeded = $false
-if (Test-Path $prunsrv) {
-    try {
-        & $prunsrv //US//$serviceName --JvmMs=512 --JvmMx=2048
-        Write-Host "Service JVM heap configured via prunsrv." -ForegroundColor Green
-        $memoryConfigSucceeded = $true
-    } catch {
-        Write-Host "Failed to update service via prunsrv: $_" -ForegroundColor Yellow
-    }
-} else {
-    Write-Host "prunsrv.exe not found; will set JAVA_OPTS fallback." -ForegroundColor Yellow
+try {
+    & $tomcatSvcCli //US//$serviceName --JvmMs=512 --JvmMx=2048
+    Write-Ok "Service JVM heap configured via tomcat9.exe."
+    $memoryConfigSucceeded = $true
+} catch {
+    Write-Warn "Failed to update service via tomcat9.exe: $_"
 }
 
 # Fallback: ensure setenv.bat provides the same heap settings for non-service starts

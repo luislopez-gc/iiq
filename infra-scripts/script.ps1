@@ -301,102 +301,6 @@ if ($serviceStatus.Status -eq "Running") {
 }
 
 
-Write-Host "`n========== Installing Microsoft JDBC Driver ==========" -ForegroundColor Magenta
-
-# Fetch the latest JDBC driver version
-Write-Host "Fetching latest Microsoft JDBC Driver information..." -ForegroundColor Cyan
-
-try {
-    # Get the Microsoft JDBC driver download page
-    $jdbcPageUrl = "https://learn.microsoft.com/en-us/sql/connect/jdbc/download-microsoft-jdbc-driver-for-sql-server"
-    $jdbcPage = Invoke-WebRequest -Uri $jdbcPageUrl -UseBasicParsing
-    
-    # Look for the latest GA version download link
-    $jdbcPattern = 'https://go\.microsoft\.com/fwlink/\?linkid=\d+'
-    $jdbcLinks = [regex]::Matches($jdbcPage.Content, $jdbcPattern)
-    
-    if ($jdbcLinks.Count -gt 0) {
-        # Use the first download link (usually the latest GA)
-        $jdbcDownloadUrl = $jdbcLinks[0].Value
-        Write-Host "Found JDBC driver download link" -ForegroundColor Green
-    } else {
-        # Fallback to direct download link for latest known version
-        Write-Host "Using direct download link for JDBC driver" -ForegroundColor Yellow
-        $jdbcDownloadUrl = "https://go.microsoft.com/fwlink/?linkid=2279200"
-    }
-    
-    $jdbcTarPath = Join-Path $downloadDir "sqljdbc.tar.gz"
-    
-    Write-Host "Downloading Microsoft JDBC Driver..." -ForegroundColor Cyan
-    Invoke-WebRequest -Uri $jdbcDownloadUrl -OutFile $jdbcTarPath -UseBasicParsing
-    Write-Host "Download completed successfully" -ForegroundColor Green
-    
-    # Extract the tar.gz file
-    Write-Host "Extracting JDBC Driver..." -ForegroundColor Cyan
-    $jdbcExtractPath = Join-Path $downloadDir "jdbc"
-    
-    # PowerShell 5.1+ can handle tar.gz extraction
-    if (Get-Command tar -ErrorAction SilentlyContinue) {
-        # Use tar command if available
-        New-Item -ItemType Directory -Path $jdbcExtractPath -Force | Out-Null
-        tar -xzf $jdbcTarPath -C $jdbcExtractPath
-    } else {
-        # Alternative extraction method for older systems
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        
-        # First extract .gz to get .tar
-        $gzStream = New-Object System.IO.FileStream($jdbcTarPath, [System.IO.FileMode]::Open)
-        $gzipStream = New-Object System.IO.Compression.GZipStream($gzStream, [System.IO.Compression.CompressionMode]::Decompress)
-        $tarPath = Join-Path $downloadDir "sqljdbc.tar"
-        $tarStream = New-Object System.IO.FileStream($tarPath, [System.IO.FileMode]::Create)
-        $gzipStream.CopyTo($tarStream)
-        $tarStream.Close()
-        $gzipStream.Close()
-        $gzStream.Close()
-        
-        Write-Host "Note: Manual TAR extraction may be required. Using alternative method..." -ForegroundColor Yellow
-    }
-    
-    # Find the JDBC JAR file
-    $tomcatLibDir = Join-Path $installDir "lib"
-    $jdbcJarFiles = Get-ChildItem -Path $jdbcExtractPath -Recurse -Filter "mssql-jdbc-*.jre*.jar" -ErrorAction SilentlyContinue
-    
-    if ($jdbcJarFiles) {
-        # Copy the appropriate JAR file to Tomcat's lib directory
-        # Prefer JRE 11 or higher version
-        $jdbcJar = $jdbcJarFiles | Where-Object { $_.Name -like "*jre11*" -or $_.Name -like "*jre17*" -or $_.Name -like "*jre21*" } | Select-Object -First 1
-        
-        if (-not $jdbcJar) {
-            $jdbcJar = $jdbcJarFiles | Select-Object -First 1
-        }
-        
-        Write-Host "Copying JDBC driver to Tomcat lib directory..." -ForegroundColor Cyan
-        Copy-Item -Path $jdbcJar.FullName -Destination $tomcatLibDir -Force
-        Write-Host "JDBC driver installed: $($jdbcJar.Name)" -ForegroundColor Green
-        
-        $jdbcDriverVersion = $jdbcJar.Name
-    } else {
-        Write-Host "Warning: Could not locate JDBC JAR file in extracted archive" -ForegroundColor Yellow
-        Write-Host "You may need to manually copy the driver from: $jdbcExtractPath" -ForegroundColor Yellow
-        $jdbcDriverVersion = "Not found in archive"
-    }
-    
-    # Restart Tomcat service to load the new driver
-    Write-Host "Restarting Tomcat service to load JDBC driver..." -ForegroundColor Cyan
-    Restart-Service -Name $serviceName
-    Start-Sleep -Seconds 3
-    
-    $serviceStatus = Get-Service -Name $serviceName
-    if ($serviceStatus.Status -eq "Running") {
-        Write-Host "Tomcat service restarted successfully" -ForegroundColor Green
-    }
-    
-} catch {
-    Write-Host "Error installing Microsoft JDBC Driver: $_" -ForegroundColor Red
-    Write-Host "Tomcat is still running, but JDBC driver installation failed" -ForegroundColor Yellow
-    $jdbcDriverVersion = "Installation failed"
-}
-
 # Cleanup
 Write-Host "`nCleaning up temporary files..." -ForegroundColor Cyan
 Remove-Item -Path $downloadDir -Recurse -Force
@@ -455,10 +359,5 @@ Write-Host "  Service Status: $($serviceStatus.Status)" -ForegroundColor White
 Write-Host "  Web Interface: http://localhost:8080" -ForegroundColor White
 Write-Host "  Manager App: http://localhost:8080/manager" -ForegroundColor White
 Write-Host "  (Configure credentials in conf/tomcat-users.xml)" -ForegroundColor Gray
-
-Write-Host "`nMicrosoft JDBC Driver:" -ForegroundColor Cyan
-Write-Host "  Driver: $jdbcDriverVersion" -ForegroundColor White
-Write-Host "  Location: $tomcatLibDir" -ForegroundColor White
-Write-Host "  Status: Loaded with Tomcat" -ForegroundColor White
 
 Write-Host "`n========== Installation Complete! ==========" -ForegroundColor Green

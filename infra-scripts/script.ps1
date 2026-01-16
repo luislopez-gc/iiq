@@ -1,7 +1,6 @@
 # script.ps1
 # Tomcat 9 Installation Script for Windows Server 2025
-# This script installs Microsoft OpenJDK, Apache Tomcat 9, and Microsoft JDBC Driver
-
+# This script installs Microsoft OpenJDK, Apache Tomcat 9, Microsoft JDBC Driver, Microsoft SQL Server Developer Edition, OpenSSH
 
 #Requires -RunAsAdministrator
 param(
@@ -285,20 +284,86 @@ if (-not $SseiExe) {
     }
 }
 
-# Use SSEI to quietly download full media, then run setup.exe with silent switches
+# Use SSEI to quietly download full media, then locate setup.exe (CAB first; fallback ISO)
 Write-Host "Downloading SQL Server 2022 media (quiet)..." -ForegroundColor Cyan
-$dlArgs = @(
-    "/ACTION=Download",
-    "/MEDIATYPE=CAB",
-    "/MEDIAPATH=$SqlMediaPath",
-    "/QUIET"
-)
-Start-Process -FilePath $SseiExe -ArgumentList $dlArgs -Wait
 
-# Find setup.exe in downloaded media
-$setupExe = Get-ChildItem -Path $SqlMediaPath -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+# Attempt 1: CAB media (explicit product & language)
+$dlArgsCab = @(
+    "/Action=Download",
+    "/MediaType=CAB",
+    "/MediaPath=$SqlMediaPath",
+    "/Product=Developer",
+    "/Language=en-US",
+    "/Quiet"
+)
+
+# Fallback attempt: ISO media
+$dlArgsIso = @(
+    "/Action=Download",
+    "/MediaType=ISO",
+    "/MediaPath=$SqlMediaPath",
+    "/Product=Developer",
+    "/Language=en-US",
+    "/Quiet"
+)
+
+if (-not (Test-Path $SqlMediaPath)) {
+    New-Item -ItemType Directory -Path $SqlMediaPath -Force | Out-Null
+}
+
+# Run CAB attempt
+Start-Process -FilePath $SseiExe -ArgumentList $dlArgsCab -Wait
+
+# Probe for setup.exe or ISO with a short wait loop
+$setupExe = $null
+$isoFile  = $null
+for ($i=0; $i -lt 10; $i++) {
+    Start-Sleep -Seconds 3
+    $setupCandidate = Get-ChildItem -Path $SqlMediaPath -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($setupCandidate) { $setupExe = $setupCandidate; break }
+    $isoCandidate = Get-ChildItem -Path $SqlMediaPath -Filter *.iso -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($isoCandidate) { $isoFile = $isoCandidate; break }
+}
+
+# If not found, try ISO download and probe longer
+if (-not $setupExe -and -not $isoFile) {
+    Write-Host "CAB media not found; retrying with ISO download..." -ForegroundColor Yellow
+    Start-Process -FilePath $SseiExe -ArgumentList $dlArgsIso -Wait
+
+    for ($i=0; $i -lt 20; $i++) {
+        Start-Sleep -Seconds 3
+        $setupCandidate = Get-ChildItem -Path $SqlMediaPath -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($setupCandidate) { $setupExe = $setupCandidate; break }
+        $isoCandidate = Get-ChildItem -Path $SqlMediaPath -Filter *.iso -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($isoCandidate) { $isoFile = $isoCandidate; break }
+    }
+}
+
+# If ISO found, mount and locate setup.exe on mounted volume
+$mountedImage = $null
+$mountedDrive = $null
+if (-not $setupExe -and $isoFile) {
+    Write-Host "Mounting SQL Server ISO: $($isoFile.FullName)" -ForegroundColor Cyan
+    try {
+        $mountedImage = Mount-DiskImage -ImagePath $isoFile.FullName -PassThru -ErrorAction Stop
+        # Give it a moment to present the volume/letter
+        Start-Sleep -Seconds 3
+        $vol = ($mountedImage | Get-Volume)
+        if (-not $vol -or -not $vol.DriveLetter) {
+            Start-Sleep -Seconds 3
+            $vol = ($mountedImage | Get-Volume)
+        }
+        if ($vol -and $vol.DriveLetter) {
+            $mountedDrive = $vol.DriveLetter + ":\"
+            $setupExe = Get-ChildItem -Path $mountedDrive -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        }
+    } catch {
+        Write-Host "Failed to mount ISO: $_" -ForegroundColor Red
+    }
+}
+
 if (-not $setupExe) {
-    Write-Host "setup.exe not found under $SqlMediaPath after download." -ForegroundColor Red
+    Write-Host "setup.exe not found after SSEI download (CAB or ISO). Check connectivity or proxy, or run SSEI interactively to confirm product/edition." -ForegroundColor Red
     exit 1
 }
 
@@ -319,6 +384,16 @@ $setupArgs = @(
 
 Write-Host "Installing SQL Server 2022 Developer silently (Mixed Mode, TCP/IP on)..." -ForegroundColor Cyan
 Start-Process -FilePath $setupExe.FullName -ArgumentList $setupArgs -Wait
+
+# If we mounted an ISO, dismount now
+if ($mountedImage) {
+    try {
+        Dismount-DiskImage -ImagePath $mountedImage.ImagePath -ErrorAction SilentlyContinue
+        Write-Host "Unmounted SQL Server ISO." -ForegroundColor Green
+    } catch {
+        Write-Host "Failed to unmount SQL Server ISO: $_" -ForegroundColor Yellow
+    }
+}
 
 # ----------------------------
 # Post-install: enforce static TCP port (IPAll/TcpPort = $SqlTcpPort; TcpDynamicPorts = "")

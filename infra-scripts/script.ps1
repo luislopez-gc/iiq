@@ -2,7 +2,6 @@
 # Tomcat 9 Installation Script for Windows Server 2025
 # This script installs Microsoft OpenJDK, Apache Tomcat 9, Microsoft JDBC Driver, Microsoft SQL Server Developer Edition, OpenSSH
 
-
 #Requires -RunAsAdministrator
 param(
     [Parameter(Mandatory = $true)]
@@ -18,7 +17,7 @@ param(
 # =========================
 # Config (edit if desired)
 # =========================
-$downloadDir   = "C:\Temp\TomcatInstall"
+$downloadDir   = "C:\Temp\Install"
 $installDir    = "C:\Program Files\Apache Software Foundation\Tomcat 9.0"
 $jdkInstallDir = "C:\Program Files\Microsoft\jdk-21"
 $serviceName   = "Tomcat9"
@@ -26,15 +25,14 @@ $serviceName   = "Tomcat9"
 # SQL Server install preferences
 $SqlInstanceName        = "MSSQLSERVER"              # default instance
 $SqlSysAdminAccounts    = @("Administrators")        # add local Administrators as sysadmin
-$SqlMediaRoot           = Join-Path $downloadDir "sqlmedia"
-$SqlMediaPath           = $SqlMediaRoot              # where media or ISO will be placed
+$SqlMediaPath           = Join-Path $downloadDir "SQL2022"   # <-- media path now derived from downloadDir
 $OpenFirewallForSql     = $true
 $SqlTcpPort             = 1433
 
-# Microsoft official SSEI (SQL Server 2022 Developer) fallback URL
+# Microsoft official SSEI (SQL Server 2022 Developer) downloader URL
 $SqlSseiDownloadUrl     = "https://go.microsoft.com/fwlink/p/?linkid=2215158&clcid=0x409&culture=en-us&country=us"
 
-# Create download directory
+# Create base download directory
 if (-not (Test-Path $downloadDir)) {
     New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
 }
@@ -251,10 +249,11 @@ try {
 # ======================================
 Write-Host "`n========== Installing Microsoft SQL Server 2022 Developer (x64) ==========" -ForegroundColor Magenta
 
-# Ensure SQL media root exists
-if (-not (Test-Path $SqlMediaRoot)) {
-    New-Item -ItemType Directory -Path $SqlMediaRoot -Force | Out-Null
+# Ensure SQL media path exists
+if (-not (Test-Path $SqlMediaPath)) {
+    New-Item -ItemType Directory -Path $SqlMediaPath -Force | Out-Null
 }
+Write-Host "SQL media path: $SqlMediaPath" -ForegroundColor Cyan
 
 # Try WinGet to fetch SSEI; otherwise use direct Microsoft URL
 $SseiExe = $null
@@ -288,11 +287,11 @@ if (-not $SseiExe) {
 # Use SSEI to download media (CAB first; fallback to ISO), then locate setup.exe
 Write-Host "Downloading SQL Server 2022 media (quiet)..." -ForegroundColor Cyan
 
+# NOTE: /Product is NOT a valid switch; removed intentionally
 $dlArgsCab = @(
     "/Action=Download",
     "/MediaType=CAB",
     "/MediaPath=$SqlMediaPath",
-    "/Product=Developer",
     "/Language=en-US",
     "/Quiet"
 )
@@ -300,14 +299,9 @@ $dlArgsIso = @(
     "/Action=Download",
     "/MediaType=ISO",
     "/MediaPath=$SqlMediaPath",
-    "/Product=Developer",
     "/Language=en-US",
     "/Quiet"
 )
-
-if (-not (Test-Path $SqlMediaPath)) {
-    New-Item -ItemType Directory -Path $SqlMediaPath -Force | Out-Null
-}
 
 # Attempt CAB
 Start-Process -FilePath $SseiExe -ArgumentList $dlArgsCab -Wait
@@ -318,18 +312,15 @@ $isoFile  = $null
 
 for ($i=0; $i -lt 12 -and -not $setupExe; $i++) {
     Start-Sleep -Seconds 5
-    # direct setup.exe (rare from CAB) 
     $setupExe = Get-ChildItem -Path $SqlMediaPath -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $setupExe) {
-        # probe for ISO presence (if SSEI happened to drop ISO)
         $isoFile = Get-ChildItem -Path $SqlMediaPath -Filter *.iso -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($isoFile) { break }
     }
 }
 
-# === NEW: Extract CAB media if present (EXE + BOX) ===
+# Extract CAB media if present (EXE + BOX)
 if (-not $setupExe -and -not $isoFile) {
-    # Find the .box and its paired .exe
     $cabBox = Get-ChildItem -Path $SqlMediaPath -Filter *.box -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     $cabExe = $null
     if ($cabBox) {
@@ -337,7 +328,6 @@ if (-not $setupExe -and -not $isoFile) {
         $cabExe = Get-ChildItem -Path $SqlMediaPath -Filter ($base + ".exe") -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
     }
     if (-not $cabExe) {
-        # Generic fallback pattern for the self-extracting media EXE (but not setup.exe)
         $cabExe = Get-ChildItem -Path $SqlMediaPath -Filter *SQLServer*ENU*.exe -Recurse -ErrorAction SilentlyContinue |
                   Where-Object { $_.Name -ne "setup.exe" } |
                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -349,7 +339,6 @@ if (-not $setupExe -and -not $isoFile) {
         Write-Host "Extracting CAB media to: $extractRoot ..." -ForegroundColor Cyan
         try {
             Start-Process -FilePath $cabExe.FullName -ArgumentList "/Q", "/X:$extractRoot" -Wait
-            # Now locate setup.exe inside extracted tree
             $setupExe = Get-ChildItem -Path $extractRoot -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($setupExe) {
                 Write-Host "Found setup.exe after CAB extraction: $($setupExe.FullName)" -ForegroundColor Green
@@ -387,6 +376,7 @@ if (-not $setupExe -and $isoFile) {
         if ($vol -and $vol.DriveLetter) {
             $mountedDrive = $vol.DriveLetter + ":\"
             $setupExe = Get-ChildItem -Path $mountedDrive -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($setupExe) { Write-Host "Found setup.exe on mounted ISO: $($setupExe.FullName)" -ForegroundColor Green }
         }
     } catch {
         Write-Host "Failed to mount ISO: $_" -ForegroundColor Red
@@ -394,7 +384,7 @@ if (-not $setupExe -and $isoFile) {
 }
 
 if (-not $setupExe) {
-    Write-Host "setup.exe not found after SSEI download (CAB or ISO). Check connectivity/proxy, or rerun." -ForegroundColor Red
+    Write-Host "setup.exe not found after SSEI download (CAB or ISO). Check connectivity/proxy, then rerun." -ForegroundColor Red
     exit 1
 }
 
@@ -413,7 +403,7 @@ $setupArgs = @(
     "/ENU=True"
 )
 
-Write-Host "Installing SQL Server 2022 Developer silently (Mixed Mode, TCP/IP on)..." -ForegroundColor Cyan
+Write-Host "Installing SQL Server 2022 Developer silently (Mixed Mode, TCP/IP on) from: $($setupExe.FullName)" -ForegroundColor Cyan
 Start-Process -FilePath $setupExe.FullName -ArgumentList $setupArgs -Wait
 
 # Dismount ISO if we mounted one
@@ -622,3 +612,4 @@ if ($sshRule) {
 }
 
 Write-Host "`n========== Installation Complete! ==========" -ForegroundColor Green
+

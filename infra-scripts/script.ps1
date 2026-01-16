@@ -2,103 +2,98 @@
 # Tomcat 9 Installation Script for Windows Server 2025
 # This script installs Microsoft OpenJDK, Apache Tomcat 9, and Microsoft JDBC Driver
 
-# Requires Administrator privileges
-#Requires -RunAsAdministrator
 
+#Requires -RunAsAdministrator
 param(
     [Parameter(Mandatory = $true)]
     [string] $tomcat_admin_username,
 
     [Parameter(Mandatory = $true)]
-    [string] $tomcat_admin_password
+    [string] $tomcat_admin_password,
+
+    [Parameter(Mandatory = $true)]
+    [string] $sql_sa_password
 )
 
-# Configuration
-$downloadDir = "C:\Temp\TomcatInstall"
-$installDir = "C:\Program Files\Apache Software Foundation\Tomcat 9.0"
+# =========================
+# Config (edit if desired)
+# =========================
+$downloadDir   = "C:\Temp\TomcatInstall"
+$installDir    = "C:\Program Files\Apache Software Foundation\Tomcat 9.0"
 $jdkInstallDir = "C:\Program Files\Microsoft\jdk-21"
-$serviceName = "Tomcat9"
+$serviceName   = "Tomcat9"
 
-# Create download directory if it doesn't exist
+# SQL Server install preferences
+$SqlInstanceName        = "MSSQLSERVER"              # default instance
+$SqlSysAdminAccounts    = @("Administrators")        # add local Administrators as sysadmin
+$SqlMediaRoot           = Join-Path $downloadDir "sqlmedia"
+$SqlMediaPath           = $SqlMediaRoot              # where Setup.exe media will be placed
+$OpenFirewallForSql     = $true
+$SqlTcpPort             = 1433                       # <-- static TCP port you want (change if needed)
+
+# Microsoft official SSEI (SQL Server 2022 Developer) fallback URL
+$SqlSseiDownloadUrl     = "https://go.microsoft.com/fwlink/p/?linkid=2215158&clcid=0x409&culture=en-us&country=us"
+
+# Create download directory (inline, no helper)
 if (-not (Test-Path $downloadDir)) {
     New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
-    Write-Host "Created download directory: $downloadDir" -ForegroundColor Green
 }
 
+# ==========================================
+# Install Microsoft OpenJDK (x64) if missing
+# ==========================================
 Write-Host "`n========== Installing Microsoft OpenJDK ==========" -ForegroundColor Magenta
-
-# Check if Java is already installed
 $javaInstalled = $false
 try {
     $javaVersion = & java -version 2>&1
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Java is already installed:" -ForegroundColor Yellow
-        Write-Host $javaVersion[0] -ForegroundColor Yellow
+        Write-Host "Java appears installed:" -ForegroundColor Cyan
+        Write-Host $javaVersion[0]
         $javaInstalled = $true
     }
-} catch {
-    Write-Host "No Java installation detected. Installing Microsoft OpenJDK..." -ForegroundColor Cyan
-}
+} catch {}
 
 if (-not $javaInstalled) {
-    # Download Microsoft OpenJDK 21 (LTS)
-    Write-Host "Downloading Microsoft OpenJDK 21..." -ForegroundColor Cyan
-    $jdkUrl = "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.msi"
+    Write-Host "Downloading Microsoft OpenJDK 21 (x64) MSI..." -ForegroundColor Cyan
+    $jdkUrl     = "https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.msi"
     $jdkMsiPath = Join-Path $downloadDir "microsoft-jdk-21.msi"
-    
+
     try {
         Invoke-WebRequest -Uri $jdkUrl -OutFile $jdkMsiPath -UseBasicParsing
-        Write-Host "Download completed successfully" -ForegroundColor Green
+        Write-Host "JDK download complete." -ForegroundColor Green
     } catch {
         Write-Host "Error downloading Microsoft OpenJDK: $_" -ForegroundColor Red
         exit 1
     }
 
-    # Install Microsoft OpenJDK silently
     Write-Host "Installing Microsoft OpenJDK 21..." -ForegroundColor Cyan
     try {
         $installArgs = @(
-            "/i"
-            "`"$jdkMsiPath`""
-            "/quiet"
-            "/norestart"
-            "ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome"
+            "/i", "`"$jdkMsiPath`"", "/quiet", "/norestart",
+            "ADDLOCAL=FeatureMain,FeatureEnvironment,FeatureJarFileRunWith,FeatureJavaHome",
             "INSTALLDIR=`"$jdkInstallDir`""
         )
-        
         Start-Process "msiexec.exe" -ArgumentList $installArgs -Wait -NoNewWindow
-        Write-Host "Microsoft OpenJDK installed successfully" -ForegroundColor Green
-        
-        # Refresh environment variables
+        Write-Host "Microsoft OpenJDK installed." -ForegroundColor Green
+
+        # Refresh env
         $env:JAVA_HOME = [System.Environment]::GetEnvironmentVariable("JAVA_HOME", [System.EnvironmentVariableTarget]::Machine)
-        $env:Path = [System.Environment]::GetEnvironmentVariable("Path", [System.EnvironmentVariableTarget]::Machine)
-        
+        $env:Path      = [System.Environment]::GetEnvironmentVariable("Path",      [System.EnvironmentVariableTarget]::Machine)
     } catch {
         Write-Host "Error installing Microsoft OpenJDK: $_" -ForegroundColor Red
         exit 1
     }
-
-    # Verify Java installation
-    Start-Sleep -Seconds 2
-    try {
-        $javaVersion = & java -version 2>&1
-        Write-Host "`nJava installation verified:" -ForegroundColor Green
-        Write-Host $javaVersion[0] -ForegroundColor White
-    } catch {
-        Write-Host "Warning: Java installation may not be complete. Path may need refresh." -ForegroundColor Yellow
-    }
 }
 
-
+# ======================================
+# Install Apache Tomcat 9 (Windows x64)
+# ======================================
 Write-Host "`n========== Installing Apache Tomcat 9 ==========" -ForegroundColor Magenta
-
 Write-Host "Fetching latest Tomcat 9 version information..." -ForegroundColor Cyan
 
-# Download the Tomcat 9 downloads page to find the latest version
 $tomcatDownloadsUrl = "https://tomcat.apache.org/download-90.cgi"
 $webContent = Invoke-WebRequest -Uri $tomcatDownloadsUrl -UseBasicParsing
 
-# Extract the latest version number
 $versionPattern = 'https://[^"]+/tomcat-9/v(9\.[0-9]+\.[0-9]+)/'
 if ($webContent.Content -match $versionPattern) {
     $latestVersion = $Matches[1]
@@ -108,39 +103,31 @@ if ($webContent.Content -match $versionPattern) {
     $latestVersion = "9.0.96"
 }
 
-# Construct download URLs
-$majorVersion = $latestVersion.Split('.')[0] + "." + $latestVersion.Split('.')[1]
-$baseUrl = "https://archive.apache.org/dist/tomcat/tomcat-9/v$latestVersion/bin"
+$baseUrl     = "https://archive.apache.org/dist/tomcat/tomcat-9/v$latestVersion/bin"
 $zipFileName = "apache-tomcat-$latestVersion-windows-x64.zip"
-$zipUrl = "$baseUrl/$zipFileName"
-$zipPath = Join-Path $downloadDir $zipFileName
+$zipUrl      = "$baseUrl/$zipFileName"
+$zipPath     = Join-Path $downloadDir $zipFileName
 
 Write-Host "Downloading Tomcat 9 from: $zipUrl" -ForegroundColor Cyan
-
 try {
-    # Download the ZIP file (MSI installer is not available for Tomcat)
     Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
-    Write-Host "Download completed successfully" -ForegroundColor Green
+    Write-Host "Tomcat ZIP download complete" -ForegroundColor Green
 } catch {
     Write-Host "Error downloading Tomcat: $_" -ForegroundColor Red
     exit 1
 }
 
-# Extract the ZIP file
-Write-Host "Extracting Tomcat to temporary location..." -ForegroundColor Cyan
+Write-Host "Extracting Tomcat..." -ForegroundColor Cyan
 $extractPath = Join-Path $downloadDir "extracted"
 Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
 
-# Get the extracted folder name
 $extractedFolder = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
 
-# Create installation directory if it doesn't exist
 $installParentDir = Split-Path $installDir -Parent
 if (-not (Test-Path $installParentDir)) {
     New-Item -ItemType Directory -Path $installParentDir -Force | Out-Null
 }
 
-# Move Tomcat to installation directory
 Write-Host "Installing Tomcat to: $installDir" -ForegroundColor Cyan
 if (Test-Path $installDir) {
     Write-Host "Removing existing installation..." -ForegroundColor Yellow
@@ -148,29 +135,26 @@ if (Test-Path $installDir) {
 }
 Move-Item -Path $extractedFolder.FullName -Destination $installDir -Force
 
-# Unblock executables (MOTW)
-Write-Info "Unblocking binaries..."
+# Unblock and validate service wrapper
+Write-Host "Unblocking binaries..." -ForegroundColor Cyan
 Get-ChildItem (Join-Path $installDir "bin\*.exe") -ErrorAction SilentlyContinue | ForEach-Object { Unblock-File $_.FullName }
 
-# Validate presence of x64 service wrapper (CLI)
 $tomcatSvcCli = Join-Path $installDir "bin\tomcat9.exe"
 if (-not (Test-Path $tomcatSvcCli)) {
-    Write-Err "tomcat9.exe not found under $($installDir)\bin. Ensure the Windows x64 ZIP was used."
+    Write-Host "tomcat9.exe not found under $($installDir)\bin. Ensure the Windows x64 ZIP was used." -ForegroundColor Red
     exit 1
 }
 
-# Set CATALINA_HOME environment variable
-Write-Host "Setting CATALINA_HOME environment variable..." -ForegroundColor Cyan
+# Env vars
+Write-Host "Setting CATALINA_HOME..." -ForegroundColor Cyan
 [System.Environment]::SetEnvironmentVariable("CATALINA_HOME", $installDir, [System.EnvironmentVariableTarget]::Machine)
 
-# Set JAVA_HOME for the service if not already set
 $javaHome = [System.Environment]::GetEnvironmentVariable("JAVA_HOME", [System.EnvironmentVariableTarget]::Machine)
 if ([string]::IsNullOrEmpty($javaHome)) {
-    Write-Host "Setting JAVA_HOME environment variable..." -ForegroundColor Cyan
+    Write-Host "Setting JAVA_HOME..." -ForegroundColor Cyan
     if (Test-Path $jdkInstallDir) {
         [System.Environment]::SetEnvironmentVariable("JAVA_HOME", $jdkInstallDir, [System.EnvironmentVariableTarget]::Machine)
     } else {
-        # Try to find Java installation
         $javaExe = Get-Command java -ErrorAction SilentlyContinue
         if ($javaExe) {
             $javaBinPath = Split-Path $javaExe.Source
@@ -181,14 +165,11 @@ if ([string]::IsNullOrEmpty($javaHome)) {
     }
 }
 
-# Install Tomcat as a Windows service
+# Install Tomcat service
 Write-Host "Installing Tomcat as a Windows service..." -ForegroundColor Cyan
-$serviceExe = Join-Path $installDir "bin\service.bat"
-
-# Run the service install command
 Push-Location (Join-Path $installDir "bin")
 try {
-    & cmd.exe /c "service.bat install $serviceName"
+    cmd.exe /c "service.bat install $serviceName"
     Write-Host "Service installed successfully" -ForegroundColor Green
 } catch {
     Write-Host "Error installing service: $_" -ForegroundColor Red
@@ -196,44 +177,44 @@ try {
     exit 1
 }
 
-# -----------------------------
-# Configure JVM heap for service (512 MB .. 2048 MB) via CLI (Procrun)
-# -----------------------------
-Write-Info "Configuring JVM heap (min=1024MB, max=4096MB) for service '$serviceName'..."
+# Configure heap (min=1024MB, max=4096MB) via CLI
+Write-Host "Configuring JVM heap (min=1024MB, max=4096MB) for service '$serviceName'..." -ForegroundColor Cyan
 $memoryConfigSucceeded = $false
 try {
     & $tomcatSvcCli //US//$serviceName --JvmMs=1024 --JvmMx=4096
-    Write-Ok "Service JVM heap configured via tomcat9.exe."
+    Write-Host "Service JVM heap configured via tomcat9.exe." -ForegroundColor Green
     $memoryConfigSucceeded = $true
 } catch {
-    Write-Warn "Failed to update service via tomcat9.exe: $_"
+    Write-Host "Failed to update service via tomcat9.exe: $_" -ForegroundColor Yellow
 }
 
-# Fallback: ensure setenv.bat provides the same heap settings for non-service starts
+# Fallback for non-service starts
 $setenvPath = Join-Path $installDir "bin\setenv.bat"
 if (-not $memoryConfigSucceeded) {
     Write-Host "Applying fallback heap settings in setenv.bat..." -ForegroundColor Yellow
     $setenvContent = @(
         "REM Auto-generated by installer to set JVM heap for Tomcat",
-        'set "JAVA_OPTS=-Xms512m -Xmx2048m %JAVA_OPTS%"'
+        'set "JAVA_OPTS=-Xms1024m -Xmx4096m %JAVA_OPTS%"'
     ) -join [Environment]::NewLine
-
     Set-Content -Path $setenvPath -Value $setenvContent -Encoding ASCII
     Write-Host "Fallback JAVA_OPTS written to: $setenvPath" -ForegroundColor Green
 }
+Pop-Location
 
-# >>> Create tomcat-users.xml with admin/manager access <<<
-# Helper to escape XML special characters
-function Escape-Xml([string]$s) {
-    if ($null -eq $s) { return "" }
-    return ($s -replace '&','&amp;' -replace '<','&lt;' -replace '>','&gt;' -replace '"','&quot;' -replace "'","&apos;")
-}
-
-$escapedUser = Escape-Xml $tomcat_admin_username
-$escapedPass = Escape-Xml $tomcat_admin_password
+# tomcat-users.xml
+$escapedUser = [System.Security.SecurityElement]::Escape($tomcat_admin_username)
+if ($null -eq $escapedUser) { $escapedUser = "" }
+$escapedPass = [System.Security.SecurityElement]::Escape($tomcat_admin_password)
+if ($null -eq $escapedPass) { $escapedPass = "" }
 
 $tomcatUsersPath = Join-Path $installDir "conf\tomcat-users.xml"
 Write-Host "Creating Tomcat users configuration at: $tomcatUsersPath" -ForegroundColor Cyan
+
+# Ensure conf directory exists
+$confDir = Join-Path $installDir "conf"
+if (-not (Test-Path $confDir)) {
+    New-Item -ItemType Directory -Path $confDir -Force | Out-Null
+}
 
 $tomcatUsersXml = @"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -248,35 +229,13 @@ $tomcatUsersXml = @"
   <user username="$escapedUser" password="$escapedPass" roles="manager-gui,admin-gui"/>
 </tomcat-users>
 "@
-
-# Ensure conf directory exists (should already)
-$confDir = Join-Path $installDir "conf"
-if (-not (Test-Path $confDir)) {
-    New-Item -Path $confDir -ItemType Directory -Force | Out-Null
-}
 Set-Content -Path $tomcatUsersPath -Value $tomcatUsersXml -Encoding UTF8
 
-# Optionally, tighten file permissions to Administrators only (uncomment if desired)
-# try {
-#     $acl = Get-Acl $tomcatUsersPath
-#     $admins = New-Object System.Security.Principal.NTAccount("Administrators")
-#     $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($admins, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-#     $acl.SetAccessRuleProtection($true, $false) # disable inheritance
-#     $acl.SetAccessRule($rule)
-#     Set-Acl -Path $tomcatUsersPath -AclObject $acl
-#     Write-Host "Secured tomcat-users.xml ACL to Administrators." -ForegroundColor Green
-# } catch {
-#     Write-Host "Warning: Could not adjust ACL: $_" -ForegroundColor Yellow
-# }
-
-Pop-Location
-
-# Configure the service to start automatically
-Write-Host "Configuring service to start automatically..." -ForegroundColor Cyan
+# Auto-start Tomcat service
+Write-Host "Configuring Tomcat service to start automatically..." -ForegroundColor Cyan
 Set-Service -Name $serviceName -StartupType Automatic
 
-# Restart the service to apply memory settings
-Write-Host "Restarting Tomcat service to apply memory settings..." -ForegroundColor Cyan
+Write-Host "Starting Tomcat service..." -ForegroundColor Cyan
 try {
     if ((Get-Service -Name $serviceName).Status -eq "Running") {
         Restart-Service -Name $serviceName -Force
@@ -284,80 +243,278 @@ try {
         Start-Service -Name $serviceName
     }
 } catch {
-    Write-Host "Error starting/restarting service: $_" -ForegroundColor Red
+    Write-Host "Error starting/restarting Tomcat service: $_" -ForegroundColor Red
 }
 
-# Wait a moment and check service status
-Start-Sleep -Seconds 3
-$serviceStatus = Get-Service -Name $serviceName
+# ======================================
+# Install Microsoft SQL Server 2022 Developer (Mixed Mode) with TCP/IP ON
+# ======================================
+Write-Host "`n========== Installing Microsoft SQL Server 2022 Developer (x64) ==========" -ForegroundColor Magenta
 
-if ($serviceStatus.Status -eq "Running") {
-    Write-Host "`nTomcat service started successfully!" -ForegroundColor Green
-    Write-Host "Service Status: $($serviceStatus.Status)" -ForegroundColor Cyan
-    Write-Host "Heap settings applied: Min=512MB, Max=2048MB (via prunsrv or setenv.bat fallback)" -ForegroundColor Cyan
-} else {
-    Write-Host "`nWarning: Service installed but not running. Status: $($serviceStatus.Status)" -ForegroundColor Yellow
-    Write-Host "Check logs at: $installDir\logs" -ForegroundColor Yellow
+# Ensure SQL media root exists
+if (-not (Test-Path $SqlMediaRoot)) {
+    New-Item -ItemType Directory -Path $SqlMediaRoot -Force | Out-Null
 }
 
+# Prefer WinGet if present; otherwise download SSEI from Microsoft and use it to fetch media
+$SseiExe = $null
+$winget = Get-Command winget -ErrorAction SilentlyContinue
+if ($winget) {
+    try {
+        Write-Host "WinGet detected; downloading Microsoft.SQLServer.2022.Developer..." -ForegroundColor Cyan
+        & winget download -e --id "Microsoft.SQLServer.2022.Developer" -d $downloadDir --accept-source-agreements --accept-package-agreements | Out-Null
+        $candidate = Get-ChildItem -Path $downloadDir -Filter *.exe | Where-Object { $_.Name -match 'SQL.*SSEI.*Dev' -or $_.Name -match 'SQL.*Developer' } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($candidate) {
+            $SseiExe = $candidate.FullName
+            Write-Host "Downloaded installer: $($candidate.Name)" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "WinGet download failed: $_" -ForegroundColor Yellow
+    }
+}
 
-# Cleanup
-Write-Host "`nCleaning up temporary files..." -ForegroundColor Cyan
-Remove-Item -Path $downloadDir -Recurse -Force
-Write-Host "Cleanup completed" -ForegroundColor Green
+if (-not $SseiExe) {
+    Write-Host "Downloading SQL Server 2022 Developer web installer from Microsoft..." -ForegroundColor Cyan
+    $SseiExe = Join-Path $downloadDir "SQL2022-SSEI-Dev.exe"
+    try {
+        Invoke-WebRequest -Uri $SqlSseiDownloadUrl -OutFile $SseiExe -UseBasicParsing
+        Write-Host "SSEI download complete." -ForegroundColor Green
+    } catch {
+        Write-Host "Could not obtain SQL Server SSEI: $_" -ForegroundColor Red
+        exit 1
+    }
+}
 
+# Use SSEI to quietly download full media, then run setup.exe with silent switches
+Write-Host "Downloading SQL Server 2022 media (quiet)..." -ForegroundColor Cyan
+$dlArgs = @(
+    "/ACTION=Download",
+    "/MEDIATYPE=CAB",
+    "/MEDIAPATH=$SqlMediaPath",
+    "/QUIET"
+)
+Start-Process -FilePath $SseiExe -ArgumentList $dlArgs -Wait
+
+# Find setup.exe in downloaded media
+$setupExe = Get-ChildItem -Path $SqlMediaPath -Filter setup.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $setupExe) {
+    Write-Host "setup.exe not found under $SqlMediaPath after download." -ForegroundColor Red
+    exit 1
+}
+
+# Build unattended install arguments for Mixed Mode auth WITH TCP/IP enabled at setup
+$quotedAdmins = $SqlSysAdminAccounts | ForEach-Object { '"' + $_ + '"' } | Sort-Object -Unique
+$setupArgs = @(
+    "/Q",
+    "/IACCEPTSQLSERVERLICENSETERMS",
+    "/ACTION=Install",
+    "/FEATURES=SQLENGINE",
+    "/INSTANCENAME=$SqlInstanceName",
+    "/SQLSYSADMINACCOUNTS=" + ($quotedAdmins -join ' '),
+    "/TCPENABLED=1",                 # enable TCP during setup (Developer defaults to disabled)
+    "/SECURITYMODE=SQL",
+    "/SAPWD=`"$sql_sa_password`"",
+    "/ENU=True"
+)
+
+Write-Host "Installing SQL Server 2022 Developer silently (Mixed Mode, TCP/IP on)..." -ForegroundColor Cyan
+Start-Process -FilePath $setupExe.FullName -ArgumentList $setupArgs -Wait
+
+# ----------------------------
+# Post-install: enforce static TCP port (IPAll/TcpPort = $SqlTcpPort; TcpDynamicPorts = "")
+# ----------------------------
+Write-Host "Enforcing static TCP port $SqlTcpPort..." -ForegroundColor Cyan
+try {
+    [void][Reflection.Assembly]::LoadWithPartialName("Microsoft.SqlServer.SqlWmiManagement")
+    $mc   = New-Object Microsoft.SqlServer.Management.Smo.Wmi.ManagedComputer
+    $inst = $mc.ServerInstances[$SqlInstanceName]
+    if (-not $inst) { $inst = $mc.ServerInstances["MSSQLSERVER"] }
+
+    if ($inst) {
+        $tcp = $inst.ServerProtocols["Tcp"]
+        if ($tcp) {
+            foreach ($ip in $tcp.IPAddresses) {
+                # Clear dynamic ports everywhere
+                $ip.IPAddressProperties["TcpDynamicPorts"].Value = ""
+                # Set the static port only in IPAll (covers all interfaces when ListenAll=Yes)
+                if ($ip.Name -eq "IPAll") {
+                    $ip.IPAddressProperties["TcpPort"].Value = "$SqlTcpPort"
+                }
+            }
+            $tcp.Alter()
+            Write-Host "Static TCP port applied (IPAll/TcpPort=$SqlTcpPort)." -ForegroundColor Green
+        } else {
+            Write-Host "TCP protocol object not found in SMO/WMI." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Could not resolve SQL instance in SMO/WMI; skipping static port." -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "Static port configuration failed via SMO/WMI: $_" -ForegroundColor Yellow
+}
+
+# Set service to automatic; restart service to apply port change
+try {
+    Write-Host "Setting SQL Server service to Automatic..." -ForegroundColor Cyan
+    Set-Service -Name "MSSQLSERVER" -StartupType Automatic -ErrorAction SilentlyContinue
+
+    Write-Host "Restarting SQL Server service to apply TCP port change..." -ForegroundColor Cyan
+    $svc = Get-Service -Name "MSSQLSERVER" -ErrorAction SilentlyContinue
+    if ($svc) {
+        if ($svc.Status -eq "Running") { Restart-Service -Name "MSSQLSERVER" -Force } else { Start-Service -Name "MSSQLSERVER" }
+        Write-Host "SQL Server service is running." -ForegroundColor Green
+    }
+} catch {
+    Write-Host "Could not restart SQL Server service automatically: $_" -ForegroundColor Yellow
+}
+
+# ======================================
+# Enable and Configure OpenSSH Server
+# ======================================
+Write-Host "`n========== Installing & Enabling OpenSSH Server ==========" -ForegroundColor Magenta
+
+Write-Host "Installing OpenSSH Server capability..." -ForegroundColor Cyan
+try {
+    Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop
+    Write-Host "OpenSSH Server installed." -ForegroundColor Green
+} catch {
+    Write-Host "OpenSSH Server installation failed: $_" -ForegroundColor Red
+}
+
+Write-Host "Starting sshd service..." -ForegroundColor Cyan
+try {
+    Start-Service sshd
+    Write-Host "sshd service started." -ForegroundColor Green
+} catch {
+    Write-Host "Could not start sshd service: $_" -ForegroundColor Yellow
+}
+
+Write-Host "Setting sshd service to Automatic startup..." -ForegroundColor Cyan
+try {
+    Set-Service -Name sshd -StartupType Automatic
+    Write-Host "sshd configured to start automatically." -ForegroundColor Green
+} catch {
+    Write-Host "Could not set sshd startup type: $_" -ForegroundColor Yellow
+}
+
+# Open Windows Firewall for SSH 
 Write-Host "`n========== Configuring Windows Firewall ==========" -ForegroundColor Magenta
-
-# Open Windows Firewall for Tomcat port 8080
-Write-Host "Opening Windows Firewall for Tomcat (port 8080)..." -ForegroundColor Cyan
+Write-Host "Opening firewall for OpenSSH (port 22)..." -ForegroundColor Cyan
 
 try {
-    # Check if firewall rule already exists
+    $existingSSHRule = Get-NetFirewallRule -DisplayName "OpenSSH Server" -ErrorAction SilentlyContinue
+    if ($existingSSHRule) {
+        Remove-NetFirewallRule -DisplayName "OpenSSH Server" -ErrorAction SilentlyContinue
+    }
+
+    New-NetFirewallRule `
+        -Name "sshd" `
+        -DisplayName "OpenSSH Server" `
+        -Enabled True `
+        -Direction Inbound `
+        -Protocol TCP `
+        -Action Allow `
+        -LocalPort 22 | Out-Null
+
+    Write-Host "Firewall rule added: OpenSSH Server (TCP 22)" -ForegroundColor Green
+} catch {
+    Write-Host "Firewall update for OpenSSH failed: $_" -ForegroundColor Red
+}
+
+# Open Windows Firewall for SQL TCP
+if ($OpenFirewallForSql) {
+    Write-Host "Opening Windows Firewall for SQL Server (TCP $SqlTcpPort)..." -ForegroundColor Cyan
+    try {
+        $ruleName = "Microsoft SQL Server (TCP $SqlTcpPort)"
+        $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+        if ($existing) { Remove-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue }
+        New-NetFirewallRule -DisplayName $ruleName `
+                            -Direction Inbound -Action Allow -Profile Domain,Private,Public `
+                            -Protocol TCP -LocalPort $SqlTcpPort | Out-Null
+        Write-Host "Firewall rule created: $ruleName" -ForegroundColor Green
+    } catch {
+        Write-Host "Firewall rule creation failed: $_" -ForegroundColor Yellow
+    }
+}
+
+# --------------------------------------
+# Windows Firewall for Tomcat (port 8080)
+# --------------------------------------
+Write-Host "Opening Windows Firewall for Tomcat (port 8080)..." -ForegroundColor Cyan
+try {
     $existingRule = Get-NetFirewallRule -DisplayName "Apache Tomcat 9 (HTTP)" -ErrorAction SilentlyContinue
-    
     if ($existingRule) {
         Write-Host "Firewall rule already exists. Updating..." -ForegroundColor Yellow
         Remove-NetFirewallRule -DisplayName "Apache Tomcat 9 (HTTP)" -ErrorAction SilentlyContinue
     }
-    
-    # Create new firewall rule for inbound traffic on port 8080
     New-NetFirewallRule -DisplayName "Apache Tomcat 9 (HTTP)" `
                         -Description "Allow inbound HTTP traffic to Apache Tomcat 9 on port 8080" `
-                        -Direction Inbound `
-                        -Protocol TCP `
-                        -LocalPort 8080 `
-                        -Action Allow `
-                        -Profile Domain,Private,Public `
-                        -Enabled True | Out-Null
-    
-    Write-Host "Windows Firewall rule created successfully" -ForegroundColor Green
-    Write-Host "  Rule Name: Apache Tomcat 9 (HTTP)" -ForegroundColor White
-    Write-Host "  Port: 8080 (TCP)" -ForegroundColor White
-    Write-Host "  Direction: Inbound" -ForegroundColor White
-    Write-Host "  Profiles: Domain, Private, Public" -ForegroundColor White
-    
+                        -Direction Inbound -Protocol TCP -LocalPort 8080 `
+                        -Action Allow -Profile Domain,Private,Public -Enabled True | Out-Null
+    Write-Host "Windows Firewall rule created for Tomcat." -ForegroundColor Green
 } catch {
-    Write-Host "Error configuring Windows Firewall: $_" -ForegroundColor Red
-    Write-Host "You may need to manually open port 8080 in Windows Firewall" -ForegroundColor Yellow
-}
-Write-Host "`n========== Installation Summary ==========" -ForegroundColor Magenta
-Write-Host "Java:" -ForegroundColor Cyan
-try {
-    $finalJavaVersion = & java -version 2>&1
-    Write-Host "  Version: $($finalJavaVersion[0])" -ForegroundColor White
-    $currentJavaHome = [System.Environment]::GetEnvironmentVariable("JAVA_HOME", [System.EnvironmentVariableTarget]::Machine)
-    Write-Host "  JAVA_HOME: $currentJavaHome" -ForegroundColor White
-} catch {
-    Write-Host "  Status: Installed (may require system restart)" -ForegroundColor Yellow
+    Write-Host "Error configuring Windows Firewall for Tomcat: $_" -ForegroundColor Red
+    Write-Host "You may need to open port 8080 manually." -ForegroundColor Yellow
 }
 
-Write-Host "`nTomcat:" -ForegroundColor Cyan
-Write-Host "  Version: $latestVersion" -ForegroundColor White
-Write-Host "  Install Location: $installDir" -ForegroundColor White
-Write-Host "  Service Name: $serviceName" -ForegroundColor White
-Write-Host "  Service Status: $($serviceStatus.Status)" -ForegroundColor White
-Write-Host "  Web Interface: http://localhost:8080" -ForegroundColor White
-Write-Host "  Manager App: http://localhost:8080/manager" -ForegroundColor White
-Write-Host "  (Configure credentials in conf/tomcat-users.xml)" -ForegroundColor Gray
+# --------------------------------------
+# Final status
+# --------------------------------------
+Write-Host "`n========== Installation Summary ==========" -ForegroundColor Magenta
+
+Write-Host "Tomcat:" -ForegroundColor Cyan
+Write-Host "  Version: $latestVersion"
+Write-Host "  Install Location: $installDir"
+Write-Host "  Service Name: $serviceName"
+try {
+    $serviceStatus = Get-Service -Name $serviceName
+    Write-Host "  Service Status: $($serviceStatus.Status)"
+} catch {}
+Write-Host "  Web Interface: http://localhost:8080"
+Write-Host "  Manager App:  http://localhost:8080/manager"
+Write-Host "  Credentials:  conf\tomcat-users.xml (admin user created)"
+
+Write-Host "`nSQL Server:" -ForegroundColor Cyan
+Write-Host "  Edition:      2022 Developer"
+Write-Host "  Instance:     $SqlInstanceName"
+Write-Host "  Service:      MSSQLSERVER"
+Write-Host "  Auth Mode:    Mixed (SQL + Windows; sa set)"
+Write-Host "  TCP/IP:       Enabled at setup"
+Write-Host "  Static Port:  $SqlTcpPort (IPAll)"
+if ($OpenFirewallForSql) {
+    Write-Host "  Firewall:     TCP $SqlTcpPort open (inbound)"
+}
+
+# --- OpenSSH Summary ---
+Write-Host "`nOpenSSH:" -ForegroundColor Cyan
+# Capability state
+try {
+    $sshCap = Get-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 -ErrorAction Stop
+    Write-Host ("  Capability:   {0}" -f $sshCap.State)
+} catch {
+    Write-Host "  Capability:   Unknown (query failed)"
+}
+# Service status & startup
+$sshSvc = Get-Service -Name "sshd" -ErrorAction SilentlyContinue
+if ($sshSvc) {
+    Write-Host "  Service:      sshd"
+    Write-Host ("  Status:       {0}" -f $sshSvc.Status)
+    Write-Host ("  Startup:      {0}" -f $sshSvc.StartType)
+} else {
+    Write-Host "  Service:      sshd (not found)"
+}
+# Firewall rule
+$sshRule = Get-NetFirewallRule -DisplayName "OpenSSH Server" -ErrorAction SilentlyContinue
+if ($sshRule) {
+    $sshEnabled = $sshRule.Enabled
+    $sshPort = "Unknown"
+    try {
+        $sshPortFilter = $sshRule | Get-NetFirewallPortFilter -ErrorAction Stop
+        if ($sshPortFilter -and $sshPortFilter.LocalPort) { $sshPort = $sshPortFilter.LocalPort }
+    } catch {}
+    Write-Host ("  Firewall:     Rule present (Enabled={0}, TCP {1})" -f $sshEnabled, $sshPort)
+} else {
+    Write-Host "  Firewall:     Rule not present"
+}
 
 Write-Host "`n========== Installation Complete! ==========" -ForegroundColor Green

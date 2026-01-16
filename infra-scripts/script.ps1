@@ -199,10 +199,10 @@ try {
 # -----------------------------
 # Configure JVM heap for service (512 MB .. 2048 MB) via CLI (Procrun)
 # -----------------------------
-Write-Info "Configuring JVM heap (min=512MB, max=2048MB) for service '$serviceName'..."
+Write-Info "Configuring JVM heap (min=1024MB, max=4096MB) for service '$serviceName'..."
 $memoryConfigSucceeded = $false
 try {
-    & $tomcatSvcCli //US//$serviceName --JvmMs=512 --JvmMx=2048
+    & $tomcatSvcCli //US//$serviceName --JvmMs=1024 --JvmMx=4096
     Write-Ok "Service JVM heap configured via tomcat9.exe."
     $memoryConfigSucceeded = $true
 } catch {

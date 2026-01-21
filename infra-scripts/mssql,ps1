@@ -5,7 +5,9 @@ param(
     [string] $sql_sa_password
 )
 
+
 # SQL Server install preferences
+$downloadDir   = "C:\Temp\Install"
 $SqlInstanceName        = "MSSQLSERVER"              # default instance
 $SqlSysAdminAccounts    = @("Administrators")        # add local Administrators as sysadmin
 $SqlMediaPath           = Join-Path $downloadDir "SQL2022"   # <-- media path now derived from downloadDir
@@ -14,6 +16,11 @@ $SqlTcpPort             = 1433
 
 # Microsoft official SSEI (SQL Server 2022 Developer) downloader URL
 $SqlSseiDownloadUrl     = "https://go.microsoft.com/fwlink/p/?linkid=2215158&clcid=0x409&culture=en-us&country=us"
+
+# Create base download directory
+if (-not (Test-Path $downloadDir)) {
+    New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
+}
 
 # ======================================
 # Install Microsoft SQL Server 2022 Developer (Mixed Mode) with TCP/IP ON

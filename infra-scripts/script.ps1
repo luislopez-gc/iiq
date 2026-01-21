@@ -11,6 +11,12 @@ param(
     [string] $tomcat_admin_password
 )
 
+# Folders configuration variables
+$downloadDir   = "C:\Temp\Install"
+$installDir    = "C:\Program Files\Apache Software Foundation\Tomcat 9.0"
+$jdkInstallDir = "C:\Program Files\Microsoft\jdk-21"
+$serviceName   = "Tomcat9"
+
 # Create base download directory
 if (-not (Test-Path $downloadDir)) {
     New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null

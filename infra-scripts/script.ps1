@@ -83,8 +83,10 @@ if ($webContent.Content -match $versionPattern) {
     Write-Host "Latest Tomcat 9 version: $latestVersion" -ForegroundColor Green
 } else {
     Write-Host "Could not determine latest version. Using default version 9.0.96" -ForegroundColor Yellow
-    $latestVersion = "9.0.96"
+    $latestVersion = "9.0.113"
 }
+
+$latestVersion = "9.0.113"
 
 $baseUrl     = "https://archive.apache.org/dist/tomcat/tomcat-9/v$latestVersion/bin"
 $zipFileName = "apache-tomcat-$latestVersion-windows-x64.zip"
